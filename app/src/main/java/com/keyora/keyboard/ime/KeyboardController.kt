@@ -118,4 +118,8 @@ class KeyboardController(
         inputHandler.commitText(connectionProvider?.invoke(), "$word ")
         onTyped?.invoke(TypedEvent.SpaceOrEnter)
     }
+
+    fun commitRawText(text: String) {
+        inputHandler.commitText(connectionProvider?.invoke(), text)
+    }
 }

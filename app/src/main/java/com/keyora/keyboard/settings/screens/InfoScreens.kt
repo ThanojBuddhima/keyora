@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 fun KeyboardLayoutScreen(onBack: () -> Unit) {
     SimpleInfoScreen(
         title = "Keyboard Layout",
-        body = "Keyora currently supports English QWERTY. Additional layouts are planned for a future release.",
+        body = "English QWERTY.\n\nKeyboard height (Small / Medium / Large) can be changed from the toolbar on the keyboard: tap H S / H M / H L.",
         onBack = onBack
     )
 }
@@ -51,7 +51,7 @@ fun AboutScreen(onBack: () -> Unit) {
 fun PrivacyScreen(onBack: () -> Unit) {
     SimpleInfoScreen(
         title = "Privacy",
-        body = "Keyora is privacy-first.\n\n• No cloud processing\n• No analytics in this version\n• No advertising\n• Typed text is never sent to external servers\n• Passwords are not stored or used for suggestions\n• Suggestions are disabled for password fields\n• No AccessibilityService\n• No unnecessary permissions\n\nKeyora does not currently detect whether another app is using Light Mode or Dark Mode internally. Instead, you configure the keyboard theme per application.",
+        body = "Keyora is privacy-first.\n\n• No cloud processing\n• No analytics in this version\n• No advertising\n• Typed text is never sent to external servers\n• Passwords are not stored or used for suggestions\n• Suggestions and clipboard capture are disabled for password fields\n• Clipboard history stays on your device\n• No AccessibilityService\n• No unnecessary permissions\n\nKeyora does not currently detect whether another app is using Light Mode or Dark Mode internally. Instead, you configure the keyboard theme per application.",
         onBack = onBack
     )
 }

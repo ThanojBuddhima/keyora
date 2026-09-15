@@ -4,9 +4,12 @@ import android.content.Context
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -29,18 +32,24 @@ class KeyboardLayoutView @JvmOverloads constructor(
     private var tokens: KeyboardThemeTokens = KeyboardThemeTokens.Light
     private var keyboardState: KeyboardState = KeyboardState()
     private var pendingRows: List<List<KeySpec>> = emptyList()
+    private var keyHeightDp: Int = 42
+    private var rowGapDp: Int = 10
 
     private val keysContainer = LinearLayout(context).apply {
         orientation = VERTICAL
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
     }
 
+    private val handler = Handler(Looper.getMainLooper())
+    private var repeatRunnable: Runnable? = null
+
     private enum class KeyKind {
         CHAR,
         SPECIAL,
         RETURN,
         SPACE,
-        SPACER
+        SPACER,
+        BACKSPACE
     }
 
     private data class KeySpec(
@@ -63,6 +72,12 @@ class KeyboardLayoutView @JvmOverloads constructor(
 
     fun bind(controller: KeyboardController) {
         this.controller = controller
+        rebuild()
+    }
+
+    fun setKeyMetrics(keyHeightDp: Int, rowGapDp: Int) {
+        this.keyHeightDp = keyHeightDp
+        this.rowGapDp = rowGapDp
         rebuild()
     }
 
@@ -89,6 +104,11 @@ class KeyboardLayoutView @JvmOverloads constructor(
         if (w > 0 && w != oldw) {
             renderRows(pendingRows)
         }
+    }
+
+    override fun onDetachedFromWindow() {
+        stopRepeat()
+        super.onDetachedFromWindow()
     }
 
     private fun rebuild() {
@@ -119,7 +139,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
                 }
             )
         ) + charRow(listOf("z", "x", "c", "v", "b", "n", "m")) +
-            listOf(special("⌫", 1.5f) { controller?.onBackspace() }),
+            listOf(backspaceKey()),
         bottomRow(leftLabel = "123", onLeft = { controller?.switchToNumbers() })
     )
 
@@ -128,7 +148,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
         charRow(listOf("-", "/", ":", ";", "(", ")", "$", "&", "@", "\""), literal = true),
         listOf(special("#+=", 1.5f) { controller?.switchToSymbols() }) +
             charRow(listOf(".", ",", "?", "!", "'"), units = 1.4f, literal = true) +
-            listOf(special("⌫", 1.5f) { controller?.onBackspace() }),
+            listOf(backspaceKey()),
         bottomRow(leftLabel = "ABC", onLeft = { controller?.switchToLetters() })
     )
 
@@ -137,7 +157,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
         charRow(listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"), literal = true),
         listOf(special("123", 1.5f) { controller?.switchToNumbers() }) +
             charRow(listOf(".", ",", "?", "!", "'"), units = 1.4f, literal = true) +
-            listOf(special("⌫", 1.5f) { controller?.onBackspace() }),
+            listOf(backspaceKey()),
         bottomRow(leftLabel = "ABC", onLeft = { controller?.switchToLetters() })
     )
 
@@ -151,6 +171,13 @@ class KeyboardLayoutView @JvmOverloads constructor(
             kind = KeyKind.RETURN,
             onClick = { controller?.onEnter() }
         )
+    )
+
+    private fun backspaceKey() = KeySpec(
+        label = "⌫",
+        units = 1.5f,
+        kind = KeyKind.BACKSPACE,
+        onClick = { controller?.onBackspace() }
     )
 
     private fun charRow(
@@ -188,14 +215,14 @@ class KeyboardLayoutView @JvmOverloads constructor(
     private fun renderRows(rows: List<List<KeySpec>>) {
         keysContainer.removeAllViews()
         val contentWidth = (width - paddingLeft - paddingRight).coerceAtLeast(0)
-        val keyHeight = dp(KEY_HEIGHT_DP)
+        val keyHeight = dp(keyHeightDp)
 
         if (contentWidth <= 0 || rows.isEmpty()) {
             rows.forEachIndexed { index, _ ->
                 keysContainer.addView(
                     View(context).apply {
                         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, keyHeight).apply {
-                            if (index < rows.lastIndex) bottomMargin = dp(ROW_GAP_DP)
+                            if (index < rows.lastIndex) bottomMargin = dp(rowGapDp)
                         }
                     }
                 )
@@ -210,7 +237,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
                 orientation = HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, keyHeight).apply {
-                    if (rowIndex < rows.lastIndex) bottomMargin = dp(ROW_GAP_DP)
+                    if (rowIndex < rows.lastIndex) bottomMargin = dp(rowGapDp)
                 }
             }
 
@@ -239,12 +266,12 @@ class KeyboardLayoutView @JvmOverloads constructor(
     private fun keyView(spec: KeySpec): TextView {
         val bg = when {
             spec.kind == KeyKind.RETURN || spec.highlight -> tokens.returnKeyBackground
-            spec.kind == KeyKind.SPECIAL -> tokens.specialKeyBackground
+            spec.kind == KeyKind.SPECIAL || spec.kind == KeyKind.BACKSPACE -> tokens.specialKeyBackground
             else -> tokens.keyBackground
         }
         val fg = when {
             spec.kind == KeyKind.RETURN || spec.highlight -> tokens.returnKeyText
-            spec.kind == KeyKind.SPECIAL -> tokens.specialKeyText
+            spec.kind == KeyKind.SPECIAL || spec.kind == KeyKind.BACKSPACE -> tokens.specialKeyText
             else -> tokens.keyText
         }
 
@@ -255,7 +282,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
             setTextSize(
                 TypedValue.COMPLEX_UNIT_SP,
                 when (spec.kind) {
-                    KeyKind.SPECIAL, KeyKind.RETURN -> 13f
+                    KeyKind.SPECIAL, KeyKind.RETURN, KeyKind.BACKSPACE -> 13f
                     else -> 18f
                 }
             )
@@ -269,11 +296,48 @@ class KeyboardLayoutView @JvmOverloads constructor(
             isClickable = true
             isFocusable = true
             background = roundedKeyDrawable(bg)
-            setOnClickListener { spec.onClick?.invoke() }
-            if (spec.onLongClick != null) {
-                setOnLongClickListener { spec.onLongClick.invoke() }
+
+            if (spec.kind == KeyKind.BACKSPACE) {
+                setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            v.isPressed = true
+                            controller?.onBackspace()
+                            startRepeat { controller?.onBackspace() }
+                            true
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            v.isPressed = false
+                            stopRepeat()
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            } else {
+                setOnClickListener { spec.onClick?.invoke() }
+                if (spec.onLongClick != null) {
+                    setOnLongClickListener { spec.onLongClick.invoke() }
+                }
             }
         }
+    }
+
+    private fun startRepeat(action: () -> Unit) {
+        stopRepeat()
+        val runnable = object : Runnable {
+            override fun run() {
+                action()
+                handler.postDelayed(this, REPEAT_INTERVAL_MS)
+            }
+        }
+        repeatRunnable = runnable
+        handler.postDelayed(runnable, REPEAT_INITIAL_DELAY_MS)
+    }
+
+    private fun stopRepeat() {
+        repeatRunnable?.let { handler.removeCallbacks(it) }
+        repeatRunnable = null
     }
 
     private fun roundedKeyDrawable(fill: Int): StateListDrawable {
@@ -305,12 +369,12 @@ class KeyboardLayoutView @JvmOverloads constructor(
 
     companion object {
         private const val TOTAL_UNITS = 10f
-        private const val KEY_HEIGHT_DP = 42
         private const val KEY_GAP_DP = 5
-        private const val ROW_GAP_DP = 10
         private const val KEY_RADIUS_DP = 8
         private const val HORIZONTAL_PAD_DP = 3
-        private const val TOP_PAD_DP = 8
-        private const val BOTTOM_PAD_DP = 6
+        private const val TOP_PAD_DP = 4
+        private const val BOTTOM_PAD_DP = 2
+        private const val REPEAT_INITIAL_DELAY_MS = 400L
+        private const val REPEAT_INTERVAL_MS = 50L
     }
 }

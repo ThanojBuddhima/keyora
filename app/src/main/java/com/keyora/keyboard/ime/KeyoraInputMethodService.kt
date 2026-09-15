@@ -6,8 +6,10 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import com.keyora.keyboard.KeyoraApp
 import com.keyora.keyboard.appdetector.AppContextDetector
+import com.keyora.keyboard.clipboard.ClipboardRepository
 import com.keyora.keyboard.enablement.ImeEnablement
-import com.keyora.keyboard.ime.ui.KeyboardLayoutView
+import com.keyora.keyboard.ime.ui.KeyboardRootView
+import com.keyora.keyboard.settings.KeyboardHeightLevel
 import com.keyora.keyboard.settings.SettingsRepository
 import com.keyora.keyboard.theme.ThemeManager
 import com.keyora.keyboard.theme.ThemeSettings
@@ -25,13 +27,18 @@ class KeyoraInputMethodService : InputMethodService() {
 
     private var themeManager: ThemeManager? = null
     private var serviceScope: CoroutineScope? = null
-    private var keyboardView: KeyboardLayoutView? = null
+    private var rootView: KeyboardRootView? = null
+    private var clipboardRepository: ClipboardRepository? = null
+    private var settingsRepository: SettingsRepository? = null
+    private var heightLevel: KeyboardHeightLevel = KeyboardHeightLevel.MEDIUM
 
     override fun onCreate() {
         try {
             super.onCreate()
             themeManager = ThemeManager(this)
             serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            settingsRepository = settingsRepositoryOrNull()
+            clipboardRepository = ClipboardRepository(applicationContext)
 
             controller.bind(
                 connectionProvider = { currentInputConnection },
@@ -45,11 +52,17 @@ class KeyoraInputMethodService : InputMethodService() {
                 }
             )
 
-            val repo = settingsRepositoryOrNull()
+            val repo = settingsRepository
             if (repo != null) {
                 serviceScope?.launch {
                     repo.themeSettings.collectLatest { settings: ThemeSettings ->
                         themeManager?.updateSettings(settings)
+                        refreshKeyboardUi()
+                    }
+                }
+                serviceScope?.launch {
+                    repo.keyboardHeightLevel.collectLatest { level ->
+                        heightLevel = level
                         refreshKeyboardUi()
                     }
                 }
@@ -67,18 +80,30 @@ class KeyoraInputMethodService : InputMethodService() {
 
     override fun onCreateInputView(): View {
         return try {
-            val view = KeyboardLayoutView(this)
-            view.bind(controller)
-            themeManager?.let { view.applyTheme(it.resolvedTheme.value) }
-            view.renderState(controller.state.value)
-            keyboardView = view
-            view
+            val clipboard = clipboardRepository ?: ClipboardRepository(applicationContext).also {
+                clipboardRepository = it
+            }
+            val root = KeyboardRootView(this)
+            root.bind(
+                controller = controller,
+                clipboardRepository = clipboard,
+                onCycleHeight = {
+                    val next = heightLevel.next()
+                    heightLevel = next
+                    serviceScope?.launch {
+                        settingsRepository?.setKeyboardHeightLevel(next)
+                    }
+                    refreshKeyboardUi()
+                }
+            )
+            rootView = root
+            refreshKeyboardUi()
+            root
         } catch (t: Throwable) {
             Log.e(TAG, "onCreateInputView failed", t)
-            // Absolute fallback so the IME still "starts" with a visible bar.
             View(this).apply {
                 setBackgroundColor(0xFFD1D5DB.toInt())
-                minimumHeight = (260 * resources.displayMetrics.density).toInt()
+                minimumHeight = (220 * resources.displayMetrics.density).toInt()
             }
         }
     }
@@ -91,6 +116,7 @@ class KeyoraInputMethodService : InputMethodService() {
             val packageName = appDetector.getCurrentPackageName(attribute)
             themeManager?.onInputContextChanged(packageName)
             controller.onStartInput(packageName, attribute)
+            clipboardRepository?.captureEnabled = !controller.state.value.isPasswordField
             refreshKeyboardUi()
         } catch (t: Throwable) {
             Log.e(TAG, "onStartInput failed", t)
@@ -100,22 +126,31 @@ class KeyoraInputMethodService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         try {
             super.onStartInputView(info, restarting)
+            clipboardRepository?.start()
             val packageName = appDetector.getCurrentPackageName(info ?: currentInputEditorInfo)
             themeManager?.onInputContextChanged(packageName)
             controller.onStartInput(packageName, info ?: currentInputEditorInfo)
-            keyboardView?.let { setInputView(it) }
+            rootView?.let { setInputView(it) }
             refreshKeyboardUi()
         } catch (t: Throwable) {
             Log.e(TAG, "onStartInputView failed", t)
         }
     }
 
+    override fun onFinishInputView(finishingInput: Boolean) {
+        clipboardRepository?.stop()
+        super.onFinishInputView(finishingInput)
+    }
+
     override fun onDestroy() {
         try {
+            clipboardRepository?.stop()
             serviceScope?.cancel()
             serviceScope = null
-            keyboardView = null
+            rootView = null
             themeManager = null
+            clipboardRepository = null
+            settingsRepository = null
         } catch (t: Throwable) {
             Log.e(TAG, "onDestroy cleanup failed", t)
         }
@@ -123,9 +158,15 @@ class KeyoraInputMethodService : InputMethodService() {
     }
 
     private fun refreshKeyboardUi() {
-        val view = keyboardView ?: return
+        val root = rootView ?: return
         val theme = themeManager?.resolvedTheme?.value ?: return
-        view.update(theme, controller.state.value)
+        val state = controller.state.value
+        root.update(
+            theme = theme,
+            heightLevel = heightLevel,
+            passwordField = state.isPasswordField
+        )
+        root.renderKeyboardState(state)
     }
 
     private fun settingsRepositoryOrNull(): SettingsRepository? {

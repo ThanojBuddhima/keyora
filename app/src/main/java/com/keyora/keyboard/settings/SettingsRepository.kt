@@ -20,6 +20,7 @@ class SettingsRepository(private val context: Context) {
     private val globalThemeKey = stringPreferencesKey("globalTheme")
     private val appThemeRulesKey = stringPreferencesKey("appThemeRules")
     private val onboardingCompleteKey = booleanPreferencesKey("onboardingComplete")
+    private val keyboardHeightLevelKey = stringPreferencesKey("keyboardHeightLevel")
 
     val themeSettings: Flow<ThemeSettings> = context.dataStore.data.map { prefs ->
         ThemeSettings(
@@ -31,6 +32,10 @@ class SettingsRepository(private val context: Context) {
 
     val onboardingComplete: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[onboardingCompleteKey] ?: false
+    }
+
+    val keyboardHeightLevel: Flow<KeyboardHeightLevel> = context.dataStore.data.map { prefs ->
+        prefs[keyboardHeightLevelKey]?.toHeightLevel() ?: KeyboardHeightLevel.MEDIUM
     }
 
     suspend fun setGlobalTheme(mode: KeyboardThemeMode) {
@@ -61,9 +66,19 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun setKeyboardHeightLevel(level: KeyboardHeightLevel) {
+        context.dataStore.edit { prefs ->
+            prefs[keyboardHeightLevelKey] = level.name
+        }
+    }
+
     private fun String.toThemeMode(): KeyboardThemeMode =
         runCatching { KeyboardThemeMode.valueOf(this) }
             .getOrDefault(KeyboardThemeMode.SYSTEM_DEFAULT)
+
+    private fun String.toHeightLevel(): KeyboardHeightLevel =
+        runCatching { KeyboardHeightLevel.valueOf(this) }
+            .getOrDefault(KeyboardHeightLevel.MEDIUM)
 
     private fun String.toRulesMap(): Map<String, KeyboardThemeMode> {
         if (isBlank()) return emptyMap()
