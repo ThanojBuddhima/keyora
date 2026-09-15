@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Keyora</string>
+    <string name="ime_name">Keyora</string>
+    <string name="subtype_en_qwerty">English (QWERTY)</string>
+    <string name="privacy_summary">Keyora is privacy-first. Your typed text stays on your device. Keyora does not send keystrokes to servers, does not include analytics or advertising in this version, and does not store passwords.</string>
+    <string name="limitation_theme">Keyora does not currently detect whether another app is using Light Mode or Dark Mode internally. Instead, Keyora allows you to configure the keyboard theme per application.</string>
+</resources>
