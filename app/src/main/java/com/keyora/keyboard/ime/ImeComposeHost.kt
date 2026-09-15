@@ -12,6 +12,9 @@ import androidx.savedstate.SavedStateRegistryOwner
 
 /**
  * Provides Compose ViewTree owners for InputMethodService (not a ComponentActivity).
+ *
+ * Keep the host at least CREATED while the service lives so Compose can recompose
+ * when the IME window is shown again after being hidden.
  */
 class ImeComposeHost : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
@@ -29,22 +32,33 @@ class ImeComposeHost : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOw
         get() = savedStateRegistryController.savedStateRegistry
 
     fun onCreate() {
+        savedStateRegistryController.performAttach()
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
     }
 
     fun onResume() {
-        lifecycleRegistry.currentState = Lifecycle.State.STARTED
-        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) return
+        if (lifecycleRegistry.currentState < Lifecycle.State.STARTED) {
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        }
+        if (lifecycleRegistry.currentState < Lifecycle.State.RESUMED) {
+            lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        }
     }
 
     fun onPause() {
-        lifecycleRegistry.currentState = Lifecycle.State.STARTED
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) return
+        // Stay at least STARTED so Compose keeps composition while IME is briefly hidden.
+        if (lifecycleRegistry.currentState > Lifecycle.State.STARTED) {
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        }
     }
 
     fun onDestroy() {
-        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        if (lifecycleRegistry.currentState != Lifecycle.State.DESTROYED) {
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        }
         store.clear()
     }
 

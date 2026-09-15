@@ -75,6 +75,7 @@ fun KeyboardView(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .height(280.dp)
             .background(animatedBg)
             .padding(bottom = 8.dp, top = 4.dp)
     ) {

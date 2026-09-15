@@ -2,12 +2,13 @@ package com.keyora.keyboard.ime
 
 import android.inputmethodservice.InputMethodService
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.FrameLayout
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -35,12 +36,14 @@ class KeyoraInputMethodService : InputMethodService() {
 
     private lateinit var themeManager: ThemeManager
     private var serviceScope: CoroutineScope? = null
+    private var inputContainer: FrameLayout? = null
     private var composeView: ComposeView? = null
     private val typedBuffer = MutableStateFlow("")
 
     override fun onCreate() {
         super.onCreate()
         composeHost.onCreate()
+        composeHost.onResume()
         themeManager = ThemeManager(this)
         serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -69,8 +72,27 @@ class KeyoraInputMethodService : InputMethodService() {
     }
 
     override fun onCreateInputView(): View {
+        val density = resources.displayMetrics.density
+        val minHeightPx = (260 * density).toInt()
+
+        val container = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            minimumHeight = minHeightPx
+        }
+
         val view = ComposeView(this).apply {
-            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            // Do NOT dispose on detach — IME views attach/detach often; disposing
+            // leaves a blank keyboard the next time the field is focused.
+            setViewCompositionStrategy(
+                ViewCompositionStrategy.DisposeOnLifecycleDestroyed(composeHost)
+            )
             setViewTreeLifecycleOwner(composeHost)
             setViewTreeViewModelStoreOwner(composeHost)
             setViewTreeSavedStateRegistryOwner(composeHost)
@@ -90,10 +112,15 @@ class KeyoraInputMethodService : InputMethodService() {
                 )
             }
         }
+
+        container.addView(view)
+        inputContainer = container
         composeView = view
         composeHost.onResume()
-        return view
+        return container
     }
+
+    override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
@@ -106,16 +133,26 @@ class KeyoraInputMethodService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         composeHost.onResume()
+        // Ensure the input view is bound after show/hide cycles.
+        inputContainer?.let { setInputView(it) }
         val packageName = appDetector.getCurrentPackageName(info ?: currentInputEditorInfo)
         themeManager.onInputContextChanged(packageName)
         controller.onStartInput(packageName, info ?: currentInputEditorInfo)
     }
 
+    override fun onWindowShown() {
+        super.onWindowShown()
+        composeHost.onResume()
+    }
+
+    override fun onWindowHidden() {
+        super.onWindowHidden()
+        composeHost.onPause()
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
-        if (composeHost.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-            composeHost.onPause()
-        }
+        composeHost.onPause()
     }
 
     override fun onDestroy() {
@@ -123,6 +160,7 @@ class KeyoraInputMethodService : InputMethodService() {
         serviceScope?.cancel()
         serviceScope = null
         composeView = null
+        inputContainer = null
         super.onDestroy()
     }
 
