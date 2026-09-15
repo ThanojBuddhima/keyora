@@ -41,7 +41,7 @@ fun LanguageScreen(onBack: () -> Unit) {
 fun AboutScreen(onBack: () -> Unit) {
     SimpleInfoScreen(
         title = "About",
-        body = "Keyora 1.0.0\n\nAn elegant, privacy-first Android keyboard with per-app Light and Dark themes.\n\nDesign is inspired by modern minimal keyboards — Keyora does not use Apple proprietary assets, icons, or branding.",
+        body = "Keyora 1.0.5\n\nAn elegant, privacy-first Android keyboard with per-app Light and Dark themes.\n\nDesign is inspired by modern minimal keyboards — Keyora does not use Apple proprietary assets, icons, or branding.",
         onBack = onBack
     )
 }

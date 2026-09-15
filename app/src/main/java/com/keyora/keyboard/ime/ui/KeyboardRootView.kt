@@ -1,7 +1,6 @@
 package com.keyora.keyboard.ime.ui
 
 import android.content.Context
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.util.TypedValue
@@ -9,11 +8,15 @@ import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.content.res.AppCompatResources
+import androidx.core.graphics.drawable.DrawableCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.keyora.keyboard.R
 import com.keyora.keyboard.clipboard.ClipboardRepository
 import com.keyora.keyboard.ime.KeyboardController
 import com.keyora.keyboard.ime.emoji.EmojiCatalog
@@ -22,7 +25,7 @@ import com.keyora.keyboard.theme.KeyboardThemeTokens
 import com.keyora.keyboard.theme.ResolvedTheme
 
 /**
- * IME root: toolbar + optional panel + letter keyboard, with nav-bar safe padding.
+ * IME root: suggestion strip + keys + bottom emoji/clipboard dock (iOS-inspired chrome).
  */
 class KeyboardRootView @JvmOverloads constructor(
     context: Context,
@@ -39,12 +42,13 @@ class KeyboardRootView @JvmOverloads constructor(
     private var panel = Panel.NONE
     private var navInsetBottom = 0
     private var passwordField = false
+    private var suggestions: List<String> = emptyList()
 
-    private val toolbar = LinearLayout(context).apply {
+    private val suggestionBar = LinearLayout(context).apply {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(36))
-        setPadding(dp(6), dp(4), dp(6), dp(4))
+        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(SUGGESTION_HEIGHT_DP))
+        setPadding(dp(8), 0, dp(8), 0)
     }
 
     private val panelHost = FrameLayout(context).apply {
@@ -56,15 +60,24 @@ class KeyboardRootView @JvmOverloads constructor(
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
     }
 
+    private val dock = LinearLayout(context).apply {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(DOCK_CONTENT_DP))
+        setPadding(dp(16), dp(4), dp(16), dp(4))
+    }
+
     init {
         orientation = VERTICAL
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-        setBackgroundColor(tokens.background)
-        addView(toolbar)
+        background = plateBackground(tokens.background)
+        addView(suggestionBar)
         addView(panelHost)
         addView(keyboardLayout)
+        addView(dock)
         applyBottomSafePadding()
-        rebuildToolbar()
+        rebuildSuggestionBar()
+        rebuildDock()
 
         ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
             navInsetBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
@@ -83,25 +96,28 @@ class KeyboardRootView @JvmOverloads constructor(
         this.clipboardRepository = clipboardRepository
         this.onCycleHeight = onCycleHeight
         keyboardLayout.bind(controller)
-        rebuildToolbar()
+        rebuildDock()
     }
 
     fun update(
         theme: ResolvedTheme,
         heightLevel: KeyboardHeightLevel,
-        passwordField: Boolean
+        passwordField: Boolean,
+        suggestions: List<String> = emptyList()
     ) {
         this.tokens = KeyboardThemeTokens.forTheme(theme)
         this.heightLevel = heightLevel
         this.passwordField = passwordField
-        setBackgroundColor(tokens.background)
+        this.suggestions = suggestions
+        background = plateBackground(tokens.background)
         keyboardLayout.setKeyMetrics(heightLevel.keyHeightDp(), heightLevel.rowGapDp())
         keyboardLayout.applyTheme(theme)
         clipboardRepository?.captureEnabled = !passwordField
         if (passwordField && panel == Panel.CLIPBOARD) {
             showPanel(Panel.NONE)
         }
-        rebuildToolbar()
+        rebuildSuggestionBar()
+        rebuildDock()
         if (panel != Panel.NONE) renderPanel()
     }
 
@@ -110,42 +126,94 @@ class KeyboardRootView @JvmOverloads constructor(
     }
 
     private fun applyBottomSafePadding() {
-        val extra = dp(EXTRA_BOTTOM_PAD_DP)
-        setPadding(0, 0, 0, navInsetBottom + extra)
+        setPadding(0, 0, 0, navInsetBottom + dp(EXTRA_BOTTOM_PAD_DP))
     }
 
-    private fun rebuildToolbar() {
-        toolbar.removeAllViews()
-        toolbar.setBackgroundColor(tokens.background)
-        toolbar.addView(toolButton("☺") { togglePanel(Panel.EMOJI) })
-        toolbar.addView(toolButton("CB") {
-            if (!passwordField) togglePanel(Panel.CLIPBOARD)
-        })
-        toolbar.addView(toolButton("H ${heightLevel.label()}") {
-            onCycleHeight?.invoke()
-        })
-        val spacer = View(context).apply {
-            layoutParams = LayoutParams(0, LayoutParams.MATCH_PARENT, 1f)
-        }
-        toolbar.addView(spacer)
-        toolbar.addView(toolButton("ABC") {
-            showPanel(Panel.NONE)
-            controller?.switchToLetters()
-        })
-    }
+    private fun rebuildSuggestionBar() {
+        suggestionBar.removeAllViews()
+        val show = !passwordField
+        suggestionBar.visibility = if (show) VISIBLE else GONE
+        if (!show) return
 
-    private fun toolButton(label: String, onClick: () -> Unit): TextView {
-        return TextView(context).apply {
-            text = label
-            gravity = Gravity.CENTER
-            setTextColor(tokens.keyText)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = rounded(tokens.keyBackground, dp(8))
-            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT).apply {
-                marginEnd = dp(6)
+        val slots = List(3) { index -> suggestions.getOrNull(index).orEmpty() }
+        slots.forEachIndexed { index, word ->
+            if (index > 0) {
+                suggestionBar.addView(
+                    View(context).apply {
+                        layoutParams = LayoutParams(dp(1), dp(18)).apply {
+                            marginStart = dp(4)
+                            marginEnd = dp(4)
+                        }
+                        setBackgroundColor(tokens.suggestionDivider)
+                    }
+                )
             }
+            suggestionBar.addView(
+                TextView(context).apply {
+                    text = word
+                    gravity = Gravity.CENTER
+                    setTextColor(tokens.suggestionText)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                    maxLines = 1
+                    layoutParams = LayoutParams(0, LayoutParams.MATCH_PARENT, 1f)
+                    isClickable = word.isNotBlank()
+                    if (word.isNotBlank()) {
+                        setOnClickListener {
+                            controller?.commitSuggestion(word)
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    private fun rebuildDock() {
+        dock.removeAllViews()
+        dock.addView(
+            dockIcon(
+                iconRes = R.drawable.ic_emoji,
+                onClick = { togglePanel(Panel.EMOJI) }
+            )
+        )
+        dock.addView(
+            View(context).apply {
+                layoutParams = LayoutParams(0, 1, 1f)
+            }
+        )
+        dock.addView(
+            dockIcon(
+                iconRes = R.drawable.ic_clipboard,
+                onClick = {
+                    if (!passwordField) togglePanel(Panel.CLIPBOARD)
+                },
+                onLongClick = {
+                    onCycleHeight?.invoke()
+                    true
+                }
+            )
+        )
+    }
+
+    private fun dockIcon(
+        iconRes: Int,
+        onClick: () -> Unit,
+        onLongClick: (() -> Boolean)? = null
+    ): ImageView {
+        return ImageView(context).apply {
+            val drawable = AppCompatResources.getDrawable(context, iconRes)?.mutate()
+            if (drawable != null) {
+                DrawableCompat.setTint(drawable, tokens.dockIcon)
+                setImageDrawable(drawable)
+            }
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            layoutParams = LayoutParams(dp(36), dp(36))
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            isClickable = true
+            isFocusable = true
             setOnClickListener { onClick() }
+            if (onLongClick != null) {
+                setOnLongClickListener { onLongClick() }
+            }
         }
     }
 
@@ -226,12 +294,22 @@ class KeyboardRootView @JvmOverloads constructor(
         })
         header.addView(TextView(context).apply {
             text = "Clear"
-            setTextColor(tokens.returnKeyBackground)
+            setTextColor(tokens.suggestionText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setPadding(dp(8), dp(4), dp(8), dp(4))
             setOnClickListener {
                 clipboardRepository?.clear()
                 renderPanel()
+            }
+        })
+        header.addView(TextView(context).apply {
+            text = "ABC"
+            setTextColor(tokens.suggestionText)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setOnClickListener {
+                showPanel(Panel.NONE)
+                controller?.switchToLetters()
             }
         })
         column.addView(header)
@@ -277,6 +355,11 @@ class KeyboardRootView @JvmOverloads constructor(
         return column
     }
 
+    private fun plateBackground(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        setColor(color)
+    }
+
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = radius.toFloat()
@@ -291,7 +374,9 @@ class KeyboardRootView @JvmOverloads constructor(
         ).toInt()
 
     companion object {
-        private const val EXTRA_BOTTOM_PAD_DP = 12
+        private const val EXTRA_BOTTOM_PAD_DP = 8
         private const val PANEL_HEIGHT_DP = 220
+        private const val SUGGESTION_HEIGHT_DP = 40
+        private const val DOCK_CONTENT_DP = 36
     }
 }

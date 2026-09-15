@@ -1,8 +1,11 @@
 package com.keyora.keyboard.ime.ui
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Handler
 import android.os.Looper
@@ -11,8 +14,13 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.content.res.AppCompatResources
+import androidx.core.graphics.drawable.DrawableCompat
+import com.keyora.keyboard.R
 import com.keyora.keyboard.ime.KeyboardController
 import com.keyora.keyboard.ime.KeyboardLayout
 import com.keyora.keyboard.ime.KeyboardState
@@ -20,8 +28,7 @@ import com.keyora.keyboard.theme.KeyboardThemeTokens
 import com.keyora.keyboard.theme.ResolvedTheme
 
 /**
- * Classic View-based keyboard with fixed key heights (not vertically stretched).
- * Uses a 10-unit width grid so rows align like a standard phone keyboard.
+ * Classic View-based keyboard with fixed key heights and iOS-inspired floating glass keys.
  */
 class KeyboardLayoutView @JvmOverloads constructor(
     context: Context,
@@ -49,7 +56,8 @@ class KeyboardLayoutView @JvmOverloads constructor(
         RETURN,
         SPACE,
         SPACER,
-        BACKSPACE
+        BACKSPACE,
+        SHIFT
     }
 
     private data class KeySpec(
@@ -57,6 +65,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
         val units: Float,
         val kind: KeyKind,
         val highlight: Boolean = false,
+        val iconRes: Int? = null,
         val onClick: (() -> Unit)? = null,
         val onLongClick: (() -> Boolean)? = null
     )
@@ -65,7 +74,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
         orientation = VERTICAL
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         setPadding(dp(HORIZONTAL_PAD_DP), dp(TOP_PAD_DP), dp(HORIZONTAL_PAD_DP), dp(BOTTOM_PAD_DP))
-        setBackgroundColor(tokens.background)
+        setBackgroundColor(android.graphics.Color.TRANSPARENT)
         addView(keysContainer)
         rebuild()
     }
@@ -83,7 +92,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
 
     fun applyTheme(theme: ResolvedTheme) {
         tokens = KeyboardThemeTokens.forTheme(theme)
-        setBackgroundColor(tokens.background)
+        setBackgroundColor(android.graphics.Color.TRANSPARENT)
         rebuild()
     }
 
@@ -95,7 +104,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
     fun update(theme: ResolvedTheme, state: KeyboardState) {
         tokens = KeyboardThemeTokens.forTheme(theme)
         keyboardState = state
-        setBackgroundColor(tokens.background)
+        setBackgroundColor(android.graphics.Color.TRANSPARENT)
         rebuild()
     }
 
@@ -128,10 +137,12 @@ class KeyboardLayoutView @JvmOverloads constructor(
             charRow(listOf("a", "s", "d", "f", "g", "h", "j", "k", "l")) +
             listOf(spacer(0.5f)),
         listOf(
-            special(
-                label = if (keyboardState.capsLock) "⇪" else "⇧",
+            KeySpec(
+                label = "",
                 units = 1.5f,
+                kind = KeyKind.SHIFT,
                 highlight = keyboardState.shiftEnabled || keyboardState.capsLock,
+                iconRes = R.drawable.ic_shift,
                 onClick = { controller?.onShift() },
                 onLongClick = {
                     controller?.onShiftLongPress()
@@ -161,22 +172,32 @@ class KeyboardLayoutView @JvmOverloads constructor(
         bottomRow(leftLabel = "ABC", onLeft = { controller?.switchToLetters() })
     )
 
-    private fun bottomRow(leftLabel: String, onLeft: () -> Unit): List<KeySpec> = listOf(
-        special(leftLabel, 1.25f, onClick = onLeft),
-        special("EN", 1.25f) { controller?.onGlobe() },
-        KeySpec(label = "", units = 5.0f, kind = KeyKind.SPACE, onClick = { controller?.onSpace() }),
-        KeySpec(
-            label = keyboardState.enterLabel,
-            units = 2.5f,
-            kind = KeyKind.RETURN,
-            onClick = { controller?.onEnter() }
+    private fun bottomRow(leftLabel: String, onLeft: () -> Unit): List<KeySpec> {
+        val enter = keyboardState.enterLabel
+        val useReturnIcon = enter.equals("return", ignoreCase = true)
+        val useSearchIcon = enter.equals("search", ignoreCase = true)
+        return listOf(
+            special(leftLabel, 2.5f, onClick = onLeft),
+            KeySpec(label = "", units = 5.0f, kind = KeyKind.SPACE, onClick = { controller?.onSpace() }),
+            KeySpec(
+                label = if (useReturnIcon || useSearchIcon) "" else enter,
+                units = 2.5f,
+                kind = KeyKind.RETURN,
+                iconRes = when {
+                    useReturnIcon -> R.drawable.ic_return
+                    useSearchIcon -> R.drawable.ic_search
+                    else -> null
+                },
+                onClick = { controller?.onEnter() }
+            )
         )
-    )
+    }
 
     private fun backspaceKey() = KeySpec(
-        label = "⌫",
+        label = "",
         units = 1.5f,
         kind = KeyKind.BACKSPACE,
+        iconRes = R.drawable.ic_backspace,
         onClick = { controller?.onBackspace() }
     )
 
@@ -263,64 +284,90 @@ class KeyboardLayoutView @JvmOverloads constructor(
         }
     }
 
-    private fun keyView(spec: KeySpec): TextView {
-        val bg = when {
-            spec.kind == KeyKind.RETURN || spec.highlight -> tokens.returnKeyBackground
-            spec.kind == KeyKind.SPECIAL || spec.kind == KeyKind.BACKSPACE -> tokens.specialKeyBackground
+    private fun keyView(spec: KeySpec): View {
+        val fill = when {
+            spec.highlight -> tokens.returnKeyBackground
+            spec.kind == KeyKind.RETURN -> tokens.returnKeyBackground
+            spec.kind == KeyKind.SPECIAL ||
+                spec.kind == KeyKind.BACKSPACE ||
+                spec.kind == KeyKind.SHIFT -> tokens.specialKeyBackground
             else -> tokens.keyBackground
         }
         val fg = when {
-            spec.kind == KeyKind.RETURN || spec.highlight -> tokens.returnKeyText
-            spec.kind == KeyKind.SPECIAL || spec.kind == KeyKind.BACKSPACE -> tokens.specialKeyText
+            spec.highlight -> tokens.returnKeyText
+            spec.kind == KeyKind.RETURN -> tokens.returnKeyText
+            spec.kind == KeyKind.SPECIAL ||
+                spec.kind == KeyKind.BACKSPACE ||
+                spec.kind == KeyKind.SHIFT -> tokens.specialKeyText
             else -> tokens.keyText
         }
+        val elevated = spec.kind == KeyKind.CHAR || spec.kind == KeyKind.SPACE
 
-        return TextView(context).apply {
-            text = if (spec.kind == KeyKind.SPACE) "" else spec.label
-            gravity = Gravity.CENTER
-            setTextColor(fg)
-            setTextSize(
-                TypedValue.COMPLEX_UNIT_SP,
-                when (spec.kind) {
-                    KeyKind.SPECIAL, KeyKind.RETURN, KeyKind.BACKSPACE -> 13f
-                    else -> 18f
-                }
-            )
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-            includeFontPadding = false
-            setPadding(0, 0, 0, 0)
-            minHeight = 0
-            minimumHeight = 0
-            minWidth = 0
-            minimumWidth = 0
+        val container = FrameLayout(context).apply {
             isClickable = true
             isFocusable = true
-            background = roundedKeyDrawable(bg)
+            background = keyBackground(fill, elevated)
+        }
 
-            if (spec.kind == KeyKind.BACKSPACE) {
-                setOnTouchListener { v, event ->
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            v.isPressed = true
-                            controller?.onBackspace()
-                            startRepeat { controller?.onBackspace() }
-                            true
-                        }
-                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                            v.isPressed = false
-                            stopRepeat()
-                            true
-                        }
-                        else -> false
+        if (spec.iconRes != null) {
+            container.addView(
+                ImageView(context).apply {
+                    val drawable = AppCompatResources.getDrawable(context, spec.iconRes)?.mutate()
+                    if (drawable != null) {
+                        DrawableCompat.setTint(drawable, fg)
+                        setImageDrawable(drawable)
                     }
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
                 }
-            } else {
-                setOnClickListener { spec.onClick?.invoke() }
-                if (spec.onLongClick != null) {
-                    setOnLongClickListener { spec.onLongClick.invoke() }
+            )
+        } else if (spec.kind != KeyKind.SPACE) {
+            container.addView(
+                TextView(context).apply {
+                    text = spec.label
+                    gravity = Gravity.CENTER
+                    setTextColor(fg)
+                    setTextSize(
+                        TypedValue.COMPLEX_UNIT_SP,
+                        when (spec.kind) {
+                            KeyKind.SPECIAL, KeyKind.RETURN -> 15f
+                            else -> 22f
+                        }
+                    )
+                    typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                    includeFontPadding = false
+                    layoutParams = FrameLayout.LayoutParams(
+                        LayoutParams.MATCH_PARENT,
+                        LayoutParams.MATCH_PARENT
+                    )
+                }
+            )
+        }
+
+        if (spec.kind == KeyKind.BACKSPACE) {
+            container.setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        v.isPressed = true
+                        controller?.onBackspace()
+                        startRepeat { controller?.onBackspace() }
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.isPressed = false
+                        stopRepeat()
+                        true
+                    }
+                    else -> false
                 }
             }
+        } else {
+            container.setOnClickListener { spec.onClick?.invoke() }
+            if (spec.onLongClick != null) {
+                container.setOnLongClickListener { spec.onLongClick.invoke() }
+            }
         }
+        return container
     }
 
     private fun startRepeat(action: () -> Unit) {
@@ -340,23 +387,49 @@ class KeyboardLayoutView @JvmOverloads constructor(
         repeatRunnable = null
     }
 
-    private fun roundedKeyDrawable(fill: Int): StateListDrawable {
+    private fun keyBackground(fill: Int, elevated: Boolean): android.graphics.drawable.Drawable {
+        val radius = dp(KEY_RADIUS_DP).toFloat()
         fun shape(color: Int) = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(KEY_RADIUS_DP).toFloat()
+            cornerRadius = radius
             setColor(color)
         }
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_pressed), shape(darken(fill)))
-            addState(intArrayOf(), shape(fill))
+
+        val normalFill = shape(fill)
+        val pressedFill = shape(darken(fill))
+
+        val content = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressedFill)
+            addState(intArrayOf(), normalFill)
         }
+
+        val withShadow = if (elevated) {
+            val shadow = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = radius
+                setColor(tokens.keyShadow)
+            }
+            LayerDrawable(arrayOf(shadow, content)).apply {
+                val offset = dp(1)
+                setLayerInset(0, 0, offset, 0, 0)
+                setLayerInset(1, 0, 0, 0, offset)
+            }
+        } else {
+            content
+        }
+
+        return RippleDrawable(
+            ColorStateList.valueOf(0x33FFFFFF),
+            withShadow,
+            shape(0xFFFFFFFF.toInt())
+        )
     }
 
     private fun darken(color: Int): Int {
         val a = color ushr 24
-        val r = ((color shr 16) and 0xFF) * 85 / 100
-        val g = ((color shr 8) and 0xFF) * 85 / 100
-        val b = (color and 0xFF) * 85 / 100
+        val r = ((color shr 16) and 0xFF) * 88 / 100
+        val g = ((color shr 8) and 0xFF) * 88 / 100
+        val b = (color and 0xFF) * 88 / 100
         return (a shl 24) or (r shl 16) or (g shl 8) or b
     }
 
@@ -369,10 +442,10 @@ class KeyboardLayoutView @JvmOverloads constructor(
 
     companion object {
         private const val TOTAL_UNITS = 10f
-        private const val KEY_GAP_DP = 5
-        private const val KEY_RADIUS_DP = 8
+        private const val KEY_GAP_DP = 6
+        private const val KEY_RADIUS_DP = 5
         private const val HORIZONTAL_PAD_DP = 3
-        private const val TOP_PAD_DP = 4
+        private const val TOP_PAD_DP = 6
         private const val BOTTOM_PAD_DP = 2
         private const val REPEAT_INITIAL_DELAY_MS = 400L
         private const val REPEAT_INTERVAL_MS = 50L
