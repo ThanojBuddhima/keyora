@@ -1,6 +1,6 @@
 package com.keyora.keyboard.ime
 
-import android.view.KeyEvent
+import android.os.Build
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.text.InputType
@@ -11,24 +11,46 @@ import android.text.InputType
 class InputHandler {
 
     fun commitText(connection: InputConnection?, text: String) {
-        connection?.commitText(text, 1)
+        if (connection == null || text.isEmpty()) return
+        connection.beginBatchEdit()
+        try {
+            connection.finishComposingText()
+            connection.commitText(text, 1)
+        } finally {
+            connection.endBatchEdit()
+        }
     }
 
     fun backspace(connection: InputConnection?) {
         if (connection == null) return
-        val selected = connection.getSelectedText(0)
-        if (!selected.isNullOrEmpty()) {
-            connection.commitText("", 1)
-        } else {
-            connection.deleteSurroundingText(1, 0)
+        connection.beginBatchEdit()
+        try {
+            connection.finishComposingText()
+            val selected = connection.getSelectedText(0)
+            if (!selected.isNullOrEmpty()) {
+                connection.commitText("", 1)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                connection.deleteSurroundingTextInCodePoints(1, 0)
+            } else {
+                // Delete a full UTF-16 code unit pair when needed for emoji.
+                val before = connection.getTextBeforeCursor(2, 0)?.toString().orEmpty()
+                val deleteCount = when {
+                    before.length >= 2 &&
+                        Character.isSurrogatePair(before[before.length - 2], before[before.length - 1]) -> 2
+                    before.isNotEmpty() -> 1
+                    else -> 1
+                }
+                connection.deleteSurroundingText(deleteCount, 0)
+            }
+        } finally {
+            connection.endBatchEdit()
         }
     }
 
     fun enter(connection: InputConnection?, editorInfo: EditorInfo?) {
         if (connection == null) return
-        // Always insert a newline (never Done/Search/Go editor actions).
-        connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
-        connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+        // Insert a real newline — never KEYCODE_ENTER (that often sends/clears chat fields).
+        commitText(connection, "\n")
     }
 
     fun space(connection: InputConnection?) {

@@ -5,7 +5,9 @@ import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.GridLayout
@@ -32,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 /**
  * IME root: top utility toolbar + keys (or emoji/clipboard panel).
@@ -47,6 +50,7 @@ class KeyboardRootView @JvmOverloads constructor(
     private var clipboardRepository: ClipboardRepository? = null
     private var recentEmojiStore: RecentEmojiStore? = null
     private var onCycleHeight: (() -> Unit)? = null
+    private var onCycleTheme: (() -> Unit)? = null
     private var tokens = KeyboardThemeTokens.Light
     private var resolvedTheme: ResolvedTheme = ResolvedTheme.LIGHT
     private var heightLevel = KeyboardHeightLevel.MEDIUM
@@ -57,6 +61,8 @@ class KeyboardRootView @JvmOverloads constructor(
     private var emojiTabId: String = TAB_RECENT
     private var recentEmojis: List<String> = emptyList()
     private val viewScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val emojiTabOrder: List<String> =
+        listOf(TAB_RECENT) + EmojiCatalog.categories.map { it.id }
 
     private val toolbar = LinearLayout(context).apply {
         orientation = HORIZONTAL
@@ -98,18 +104,23 @@ class KeyboardRootView @JvmOverloads constructor(
         controller: KeyboardController,
         clipboardRepository: ClipboardRepository,
         recentEmojiStore: RecentEmojiStore,
-        onCycleHeight: () -> Unit
+        onCycleHeight: () -> Unit,
+        onCycleTheme: () -> Unit
     ) {
         this.controller = controller
         this.clipboardRepository = clipboardRepository
         this.recentEmojiStore = recentEmojiStore
         this.onCycleHeight = onCycleHeight
+        this.onCycleTheme = onCycleTheme
         keyboardLayout.bind(controller)
         rebuildToolbar()
         viewScope.launch {
             recentEmojiStore.recent.collect { list ->
                 recentEmojis = list
-                if (panel == Panel.EMOJI) renderPanel()
+                // Only rebuild when Recent tab is visible — avoids wiping inserts mid-tap.
+                if (panel == Panel.EMOJI && emojiTabId == TAB_RECENT) {
+                    renderPanel()
+                }
             }
         }
     }
@@ -186,6 +197,12 @@ class KeyboardRootView @JvmOverloads constructor(
             View(context).apply {
                 layoutParams = LayoutParams(0, 1, 1f)
             }
+        )
+        toolbar.addView(
+            toolbarIcon(
+                iconRes = R.drawable.ic_theme,
+                onClick = { onCycleTheme?.invoke() }
+            )
         )
         toolbar.addView(
             toolbarIcon(
@@ -347,8 +364,42 @@ class KeyboardRootView @JvmOverloads constructor(
             }
         }
         scroll.addView(grid)
+        attachCategorySwipe(scroll)
         column.addView(scroll)
         return column
+    }
+
+    private fun attachCategorySwipe(target: View) {
+        val detector = GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (abs(velocityX) <= abs(velocityY) || abs(velocityX) < 800f) return false
+                    if (velocityX < 0) switchEmojiTab(1) else switchEmojiTab(-1)
+                    return true
+                }
+            }
+        )
+        // Observe touches for horizontal flings without blocking vertical ScrollView.
+        target.setOnTouchListener { _, event ->
+            detector.onTouchEvent(event)
+            false
+        }
+    }
+
+    private fun switchEmojiTab(delta: Int) {
+        val index = emojiTabOrder.indexOf(emojiTabId).coerceAtLeast(0)
+        val next = (index + delta).coerceIn(0, emojiTabOrder.lastIndex)
+        if (next == index) return
+        emojiTabId = emojiTabOrder[next]
+        renderPanel()
     }
 
     private fun categoryChip(id: String, label: String, selected: Boolean): TextView {
@@ -380,6 +431,8 @@ class KeyboardRootView @JvmOverloads constructor(
 
     private fun commitEmoji(emoji: String) {
         controller?.commitRawText(emoji)
+        // Optimistic local MRU so Recent updates without fighting the insert.
+        recentEmojis = (listOf(emoji) + recentEmojis.filter { it != emoji }).take(32)
         viewScope.launch {
             recentEmojiStore?.record(emoji)
         }

@@ -67,6 +67,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
         val highlight: Boolean = false,
         val strongHighlight: Boolean = false,
         val iconRes: Int? = null,
+        val baseChar: String? = null,
         val onClick: (() -> Unit)? = null,
         val onLongClick: (() -> Boolean)? = null
     )
@@ -101,10 +102,24 @@ class KeyboardLayoutView @JvmOverloads constructor(
     }
 
     fun renderState(state: KeyboardState) {
-        if (!keyboardVisualStateChanged(keyboardState, state)) {
+        val layoutChanged = keyboardState.currentLayout != state.currentLayout ||
+            keyboardState.enterLabel != state.enterLabel
+        val caseOrShiftChanged =
+            keyboardState.shiftMode != state.shiftMode ||
+                keyboardState.autoShiftActive != state.autoShiftActive ||
+                keyboardState.lettersUppercase != state.lettersUppercase
+
+        if (!layoutChanged && !caseOrShiftChanged) {
             keyboardState = state
             return
         }
+
+        if (!layoutChanged && caseOrShiftChanged && keysContainer.childCount > 0) {
+            keyboardState = state
+            applyCaseAndShiftInPlace()
+            return
+        }
+
         keyboardState = state
         rebuild()
     }
@@ -112,22 +127,59 @@ class KeyboardLayoutView @JvmOverloads constructor(
     fun update(theme: ResolvedTheme, state: KeyboardState) {
         val nextTokens = KeyboardThemeTokens.forTheme(theme)
         val themeChanged = tokens != nextTokens
-        val stateChanged = keyboardVisualStateChanged(keyboardState, state)
         tokens = nextTokens
-        keyboardState = state
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
-        if (themeChanged || stateChanged) {
+        if (themeChanged) {
+            keyboardState = state
             rebuild()
+            return
+        }
+        renderState(state)
+    }
+
+    private fun applyCaseAndShiftInPlace() {
+        val uppercase = keyboardState.lettersUppercase
+        walkKeys(keysContainer) { view ->
+            when (val tag = view.tag) {
+                is LetterTag -> {
+                    val label = (view as? FrameLayout)?.getChildAt(0) as? TextView
+                    label?.text = if (uppercase) tag.base.uppercase() else tag.base
+                }
+                is ShiftTag -> {
+                    val fill = when {
+                        keyboardState.shiftStrongHighlight -> tokens.returnKeyBackground
+                        keyboardState.shiftHighlighted -> tokens.keyBackground
+                        else -> tokens.specialKeyBackground
+                    }
+                    val fg = when {
+                        keyboardState.shiftStrongHighlight -> tokens.returnKeyText
+                        else -> tokens.specialKeyText
+                    }
+                    view.background = keyBackground(fill, elevated = false)
+                    val icon = (view as? FrameLayout)?.getChildAt(0) as? ImageView
+                    icon?.drawable?.mutate()?.let { d ->
+                        DrawableCompat.setTint(d, fg)
+                        icon.setImageDrawable(d)
+                    }
+                }
+            }
         }
     }
 
-    private fun keyboardVisualStateChanged(old: KeyboardState, next: KeyboardState): Boolean {
-        return old.currentLayout != next.currentLayout ||
-            old.shiftMode != next.shiftMode ||
-            old.autoShiftActive != next.autoShiftActive ||
-            old.enterLabel != next.enterLabel ||
-            old.lettersUppercase != next.lettersUppercase
+    private fun walkKeys(parent: android.view.ViewGroup, block: (View) -> Unit) {
+        for (i in 0 until parent.childCount) {
+            val child = parent.getChildAt(i)
+            if (child is android.view.ViewGroup && child.tag !is LetterTag && child.tag !is ShiftTag) {
+                walkKeys(child, block)
+            }
+            if (child.tag is LetterTag || child.tag is ShiftTag) {
+                block(child)
+            }
+        }
     }
+
+    private data class LetterTag(val base: String)
+    private data class ShiftTag(val marker: Boolean = true)
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -220,7 +272,8 @@ class KeyboardLayoutView @JvmOverloads constructor(
             label = label,
             units = units,
             kind = KeyKind.CHAR,
-            onClick = { controller?.onCharacter(ch) }
+            onClick = { controller?.onCharacter(ch) },
+            baseChar = if (literal) null else ch
         )
     }
 
@@ -318,6 +371,10 @@ class KeyboardLayoutView @JvmOverloads constructor(
             isClickable = true
             isFocusable = true
             background = keyBackground(fill, elevated)
+            when {
+                spec.kind == KeyKind.SHIFT -> tag = ShiftTag()
+                spec.baseChar != null -> tag = LetterTag(spec.baseChar)
+            }
         }
 
         if (spec.iconRes != null) {
@@ -373,7 +430,21 @@ class KeyboardLayoutView @JvmOverloads constructor(
                 }
             }
         } else {
-            container.setOnClickListener { spec.onClick?.invoke() }
+            // Commit on finger-down for low-latency typing (avoids lost clicks during UI updates).
+            container.setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        v.isPressed = true
+                        spec.onClick?.invoke()
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.isPressed = false
+                        true
+                    }
+                    else -> false
+                }
+            }
             if (spec.onLongClick != null) {
                 container.setOnLongClickListener { spec.onLongClick.invoke() }
             }

@@ -16,6 +16,7 @@ import com.keyora.keyboard.ime.emoji.RecentEmojiStore
 import com.keyora.keyboard.ime.ui.KeyboardRootView
 import com.keyora.keyboard.settings.KeyboardHeightLevel
 import com.keyora.keyboard.settings.SettingsRepository
+import com.keyora.keyboard.theme.KeyboardThemeMode
 import com.keyora.keyboard.theme.ResolvedTheme
 import com.keyora.keyboard.theme.ThemeManager
 import com.keyora.keyboard.theme.ThemeSettings
@@ -122,7 +123,8 @@ class KeyoraInputMethodService : InputMethodService() {
                         settingsRepository?.setKeyboardHeightLevel(next)
                     }
                     refreshChrome()
-                }
+                },
+                onCycleTheme = { cycleThemeForCurrentApp() }
             )
             rootView = root
             refreshAll()
@@ -205,6 +207,23 @@ class KeyoraInputMethodService : InputMethodService() {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "Glass window setup failed", t)
+        }
+    }
+
+    private fun cycleThemeForCurrentApp() {
+        val mgr = themeManager ?: return
+        val pkg = mgr.currentPackage()
+        val nextMode = when (mgr.resolvedTheme.value) {
+            ResolvedTheme.LIGHT -> KeyboardThemeMode.DARK
+            ResolvedTheme.DARK -> KeyboardThemeMode.LIGHT
+        }
+        serviceScope?.launch {
+            val repo = settingsRepository ?: return@launch
+            if (pkg.isNullOrBlank()) {
+                repo.setGlobalTheme(nextMode)
+            } else {
+                repo.setThemeForPackage(pkg, nextMode)
+            }
         }
     }
 
