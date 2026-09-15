@@ -85,27 +85,47 @@ class KeyboardLayoutView @JvmOverloads constructor(
     }
 
     fun setKeyMetrics(keyHeightDp: Int, rowGapDp: Int) {
+        if (this.keyHeightDp == keyHeightDp && this.rowGapDp == rowGapDp) return
         this.keyHeightDp = keyHeightDp
         this.rowGapDp = rowGapDp
         rebuild()
     }
 
     fun applyTheme(theme: ResolvedTheme) {
-        tokens = KeyboardThemeTokens.forTheme(theme)
+        val next = KeyboardThemeTokens.forTheme(theme)
+        if (tokens == next) return
+        tokens = next
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
         rebuild()
     }
 
     fun renderState(state: KeyboardState) {
+        if (!keyboardVisualStateChanged(keyboardState, state)) {
+            keyboardState = state
+            return
+        }
         keyboardState = state
         rebuild()
     }
 
     fun update(theme: ResolvedTheme, state: KeyboardState) {
-        tokens = KeyboardThemeTokens.forTheme(theme)
+        val nextTokens = KeyboardThemeTokens.forTheme(theme)
+        val themeChanged = tokens != nextTokens
+        val stateChanged = keyboardVisualStateChanged(keyboardState, state)
+        tokens = nextTokens
         keyboardState = state
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
-        rebuild()
+        if (themeChanged || stateChanged) {
+            rebuild()
+        }
+    }
+
+    private fun keyboardVisualStateChanged(old: KeyboardState, next: KeyboardState): Boolean {
+        return old.currentLayout != next.currentLayout ||
+            old.shiftEnabled != next.shiftEnabled ||
+            old.capsLock != next.capsLock ||
+            old.enterLabel != next.enterLabel ||
+            old.lettersUppercase != next.lettersUppercase
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {

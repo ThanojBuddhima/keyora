@@ -38,11 +38,13 @@ class KeyboardRootView @JvmOverloads constructor(
     private var clipboardRepository: ClipboardRepository? = null
     private var onCycleHeight: (() -> Unit)? = null
     private var tokens = KeyboardThemeTokens.Light
+    private var resolvedTheme: ResolvedTheme = ResolvedTheme.LIGHT
     private var heightLevel = KeyboardHeightLevel.MEDIUM
     private var panel = Panel.NONE
     private var navInsetBottom = 0
     private var passwordField = false
     private var suggestions: List<String> = emptyList()
+    private var chromeApplied = false
 
     private val suggestionBar = LinearLayout(context).apply {
         orientation = HORIZONTAL
@@ -80,7 +82,9 @@ class KeyboardRootView @JvmOverloads constructor(
         rebuildDock()
 
         ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
-            navInsetBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            val gestures = insets.getInsets(WindowInsetsCompat.Type.systemGestures()).bottom
+            navInsetBottom = maxOf(nav, gestures)
             applyBottomSafePadding()
             insets
         }
@@ -105,20 +109,56 @@ class KeyboardRootView @JvmOverloads constructor(
         passwordField: Boolean,
         suggestions: List<String> = emptyList()
     ) {
-        this.tokens = KeyboardThemeTokens.forTheme(theme)
+        updateChrome(theme, heightLevel, passwordField)
+        updateSuggestions(suggestions)
+    }
+
+    fun updateChrome(
+        theme: ResolvedTheme,
+        heightLevel: KeyboardHeightLevel,
+        passwordField: Boolean
+    ) {
+        val themeChanged = !chromeApplied || resolvedTheme != theme
+        val heightChanged = !chromeApplied || this.heightLevel != heightLevel
+        val passwordChanged = !chromeApplied || this.passwordField != passwordField
+        if (!themeChanged && !heightChanged && !passwordChanged) return
+
+        resolvedTheme = theme
+        tokens = KeyboardThemeTokens.forTheme(theme)
         this.heightLevel = heightLevel
         this.passwordField = passwordField
-        this.suggestions = suggestions
-        background = plateBackground(tokens.background)
-        keyboardLayout.setKeyMetrics(heightLevel.keyHeightDp(), heightLevel.rowGapDp())
-        keyboardLayout.applyTheme(theme)
+        chromeApplied = true
+
+        if (themeChanged) {
+            background = plateBackground(tokens.background)
+            keyboardLayout.applyTheme(theme)
+        }
+        if (heightChanged) {
+            keyboardLayout.setKeyMetrics(heightLevel.keyHeightDp(), heightLevel.rowGapDp())
+            dock.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(DOCK_CONTENT_DP))
+        }
         clipboardRepository?.captureEnabled = !passwordField
         if (passwordField && panel == Panel.CLIPBOARD) {
             showPanel(Panel.NONE)
         }
+        if (themeChanged || passwordChanged) {
+            rebuildSuggestionBar()
+            rebuildDock()
+        }
+        if (panel != Panel.NONE && (themeChanged || passwordChanged)) {
+            renderPanel()
+        }
+    }
+
+    fun updateSuggestions(next: List<String>) {
+        val normalized = List(3) { index -> next.getOrNull(index).orEmpty() }
+        val current = List(3) { index -> suggestions.getOrNull(index).orEmpty() }
+        if (normalized == current && suggestionBar.childCount > 0) {
+            val expectedVisibility = if (!passwordField) VISIBLE else GONE
+            if (suggestionBar.visibility == expectedVisibility) return
+        }
+        suggestions = normalized
         rebuildSuggestionBar()
-        rebuildDock()
-        if (panel != Panel.NONE) renderPanel()
     }
 
     fun renderKeyboardState(state: com.keyora.keyboard.ime.KeyboardState) {
@@ -374,9 +414,9 @@ class KeyboardRootView @JvmOverloads constructor(
         ).toInt()
 
     companion object {
-        private const val EXTRA_BOTTOM_PAD_DP = 8
+        private const val EXTRA_BOTTOM_PAD_DP = 28
         private const val PANEL_HEIGHT_DP = 220
         private const val SUGGESTION_HEIGHT_DP = 40
-        private const val DOCK_CONTENT_DP = 36
+        private const val DOCK_CONTENT_DP = 40
     }
 }

@@ -17,6 +17,7 @@ import com.keyora.keyboard.settings.KeyboardHeightLevel
 import com.keyora.keyboard.settings.SettingsRepository
 import com.keyora.keyboard.suggestions.PlaceholderSuggestionEngine
 import com.keyora.keyboard.suggestions.SuggestionEngine
+import com.keyora.keyboard.theme.ResolvedTheme
 import com.keyora.keyboard.theme.ThemeManager
 import com.keyora.keyboard.theme.ThemeSettings
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +25,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class KeyoraInputMethodService : InputMethodService() {
@@ -74,7 +77,7 @@ class KeyoraInputMethodService : InputMethodService() {
                         }
                         KeyboardController.TypedEvent.SpaceOrEnter -> wordBuffer.clear()
                     }
-                    refreshKeyboardUi()
+                    refreshSuggestionsOnly()
                 }
             )
 
@@ -83,21 +86,37 @@ class KeyoraInputMethodService : InputMethodService() {
                 serviceScope?.launch {
                     repo.themeSettings.collectLatest { settings: ThemeSettings ->
                         themeManager?.updateSettings(settings)
-                        refreshKeyboardUi()
+                        refreshChrome()
                     }
                 }
                 serviceScope?.launch {
                     repo.keyboardHeightLevel.collectLatest { level ->
                         heightLevel = level
-                        refreshKeyboardUi()
+                        refreshChrome()
                     }
                 }
             }
 
             serviceScope?.launch {
-                controller.state.collectLatest {
-                    refreshKeyboardUi()
-                }
+                controller.state
+                    .map { state ->
+                        KeyboardVisualSnapshot(
+                            currentLayout = state.currentLayout,
+                            shiftEnabled = state.shiftEnabled,
+                            capsLock = state.capsLock,
+                            enterLabel = state.enterLabel,
+                            isPasswordField = state.isPasswordField,
+                            suggestionMode = state.suggestionMode
+                        )
+                    }
+                    .distinctUntilChanged()
+                    .collectLatest { snapshot ->
+                        rootView?.renderKeyboardState(controller.state.value)
+                        if (snapshot.isPasswordField) {
+                            refreshChrome()
+                            refreshSuggestionsOnly()
+                        }
+                    }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "onCreate failed", t)
@@ -119,11 +138,11 @@ class KeyoraInputMethodService : InputMethodService() {
                     serviceScope?.launch {
                         settingsRepository?.setKeyboardHeightLevel(next)
                     }
-                    refreshKeyboardUi()
+                    refreshChrome()
                 }
             )
             rootView = root
-            refreshKeyboardUi()
+            refreshAll()
             root
         } catch (t: Throwable) {
             Log.e(TAG, "onCreateInputView failed", t)
@@ -149,7 +168,7 @@ class KeyoraInputMethodService : InputMethodService() {
             themeManager?.onInputContextChanged(packageName)
             controller.onStartInput(packageName, attribute)
             clipboardRepository?.captureEnabled = !controller.state.value.isPasswordField
-            refreshKeyboardUi()
+            refreshAll()
         } catch (t: Throwable) {
             Log.e(TAG, "onStartInput failed", t)
         }
@@ -164,7 +183,7 @@ class KeyoraInputMethodService : InputMethodService() {
             themeManager?.onInputContextChanged(packageName)
             controller.onStartInput(packageName, info ?: currentInputEditorInfo)
             rootView?.let { setInputView(it) }
-            refreshKeyboardUi()
+            refreshAll()
         } catch (t: Throwable) {
             Log.e(TAG, "onStartInputView failed", t)
         }
@@ -206,21 +225,31 @@ class KeyoraInputMethodService : InputMethodService() {
         }
     }
 
-    private fun refreshKeyboardUi() {
+    private fun refreshAll() {
+        refreshChrome()
+        refreshSuggestionsOnly()
+        rootView?.renderKeyboardState(controller.state.value)
+    }
+
+    private fun refreshChrome() {
         val root = rootView ?: return
-        val theme = themeManager?.resolvedTheme?.value ?: return
+        val theme = themeManager?.resolvedTheme?.value ?: ResolvedTheme.LIGHT
+        val state = controller.state.value
+        root.updateChrome(
+            theme = theme,
+            heightLevel = heightLevel,
+            passwordField = state.isPasswordField
+        )
+    }
+
+    private fun refreshSuggestionsOnly() {
+        val root = rootView ?: return
         val state = controller.state.value
         val suggestions = suggestionEngine.suggestionsFor(
             prefix = wordBuffer.toString(),
             enabled = state.suggestionMode && !state.isPasswordField
         )
-        root.update(
-            theme = theme,
-            heightLevel = heightLevel,
-            passwordField = state.isPasswordField,
-            suggestions = suggestions
-        )
-        root.renderKeyboardState(state)
+        root.updateSuggestions(suggestions)
     }
 
     private fun settingsRepositoryOrNull(): SettingsRepository? {
@@ -232,6 +261,15 @@ class KeyoraInputMethodService : InputMethodService() {
             null
         }
     }
+
+    private data class KeyboardVisualSnapshot(
+        val currentLayout: KeyboardLayout,
+        val shiftEnabled: Boolean,
+        val capsLock: Boolean,
+        val enterLabel: String,
+        val isPasswordField: Boolean,
+        val suggestionMode: Boolean
+    )
 
     companion object {
         private const val TAG = "KeyoraIME"
