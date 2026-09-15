@@ -65,6 +65,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
         val units: Float,
         val kind: KeyKind,
         val highlight: Boolean = false,
+        val strongHighlight: Boolean = false,
         val iconRes: Int? = null,
         val onClick: (() -> Unit)? = null,
         val onLongClick: (() -> Boolean)? = null
@@ -122,8 +123,8 @@ class KeyboardLayoutView @JvmOverloads constructor(
 
     private fun keyboardVisualStateChanged(old: KeyboardState, next: KeyboardState): Boolean {
         return old.currentLayout != next.currentLayout ||
-            old.shiftEnabled != next.shiftEnabled ||
-            old.capsLock != next.capsLock ||
+            old.shiftMode != next.shiftMode ||
+            old.autoShiftActive != next.autoShiftActive ||
             old.enterLabel != next.enterLabel ||
             old.lettersUppercase != next.lettersUppercase
     }
@@ -161,13 +162,10 @@ class KeyboardLayoutView @JvmOverloads constructor(
                 label = "",
                 units = 1.5f,
                 kind = KeyKind.SHIFT,
-                highlight = keyboardState.shiftEnabled || keyboardState.capsLock,
+                highlight = keyboardState.shiftHighlighted,
+                strongHighlight = keyboardState.shiftStrongHighlight,
                 iconRes = R.drawable.ic_shift,
-                onClick = { controller?.onShift() },
-                onLongClick = {
-                    controller?.onShiftLongPress()
-                    true
-                }
+                onClick = { controller?.onShift() }
             )
         ) + charRow(listOf("z", "x", "c", "v", "b", "n", "m")) +
             listOf(backspaceKey()),
@@ -192,26 +190,17 @@ class KeyboardLayoutView @JvmOverloads constructor(
         bottomRow(leftLabel = "ABC", onLeft = { controller?.switchToLetters() })
     )
 
-    private fun bottomRow(leftLabel: String, onLeft: () -> Unit): List<KeySpec> {
-        val enter = keyboardState.enterLabel
-        val useReturnIcon = enter.equals("return", ignoreCase = true)
-        val useSearchIcon = enter.equals("search", ignoreCase = true)
-        return listOf(
-            special(leftLabel, 2.5f, onClick = onLeft),
-            KeySpec(label = "", units = 5.0f, kind = KeyKind.SPACE, onClick = { controller?.onSpace() }),
-            KeySpec(
-                label = if (useReturnIcon || useSearchIcon) "" else enter,
-                units = 2.5f,
-                kind = KeyKind.RETURN,
-                iconRes = when {
-                    useReturnIcon -> R.drawable.ic_return
-                    useSearchIcon -> R.drawable.ic_search
-                    else -> null
-                },
-                onClick = { controller?.onEnter() }
-            )
+    private fun bottomRow(leftLabel: String, onLeft: () -> Unit): List<KeySpec> = listOf(
+        special(leftLabel, 2.5f, onClick = onLeft),
+        KeySpec(label = "", units = 5.0f, kind = KeyKind.SPACE, onClick = { controller?.onSpace() }),
+        KeySpec(
+            label = "",
+            units = 2.5f,
+            kind = KeyKind.RETURN,
+            iconRes = R.drawable.ic_return,
+            onClick = { controller?.onEnter() }
         )
-    }
+    )
 
     private fun backspaceKey() = KeySpec(
         label = "",
@@ -306,7 +295,9 @@ class KeyboardLayoutView @JvmOverloads constructor(
 
     private fun keyView(spec: KeySpec): View {
         val fill = when {
-            spec.highlight -> tokens.returnKeyBackground
+            spec.strongHighlight || (spec.kind == KeyKind.RETURN && spec.highlight) ->
+                tokens.returnKeyBackground
+            spec.highlight -> tokens.keyBackground
             spec.kind == KeyKind.RETURN -> tokens.returnKeyBackground
             spec.kind == KeyKind.SPECIAL ||
                 spec.kind == KeyKind.BACKSPACE ||
@@ -314,7 +305,7 @@ class KeyboardLayoutView @JvmOverloads constructor(
             else -> tokens.keyBackground
         }
         val fg = when {
-            spec.highlight -> tokens.returnKeyText
+            spec.strongHighlight -> tokens.returnKeyText
             spec.kind == KeyKind.RETURN -> tokens.returnKeyText
             spec.kind == KeyKind.SPECIAL ||
                 spec.kind == KeyKind.BACKSPACE ||

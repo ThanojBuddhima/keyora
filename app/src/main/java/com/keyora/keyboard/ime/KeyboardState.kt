@@ -6,9 +6,15 @@ enum class KeyboardLayout {
     SYMBOLS
 }
 
+enum class ShiftMode {
+    OFF,
+    AUTO,
+    CAPS
+}
+
 data class KeyboardState(
-    val shiftEnabled: Boolean = false,
-    val capsLock: Boolean = false,
+    val shiftMode: ShiftMode = ShiftMode.OFF,
+    val autoShiftActive: Boolean = false,
     val currentLayout: KeyboardLayout = KeyboardLayout.LETTERS,
     val currentPackageName: String? = null,
     val language: String = "en",
@@ -17,5 +23,15 @@ data class KeyboardState(
     val enterLabel: String = "return"
 ) {
     val lettersUppercase: Boolean
-        get() = capsLock || shiftEnabled
+        get() = when (shiftMode) {
+            ShiftMode.OFF -> false
+            ShiftMode.CAPS -> true
+            ShiftMode.AUTO -> autoShiftActive
+        }
+
+    val shiftHighlighted: Boolean
+        get() = shiftMode == ShiftMode.AUTO || shiftMode == ShiftMode.CAPS
+
+    val shiftStrongHighlight: Boolean
+        get() = shiftMode == ShiftMode.CAPS
 }

@@ -59,23 +59,18 @@ class InputHandlerTest {
 class KeyboardControllerTest {
 
     @Test
-    fun shift_togglesOneShot() {
+    fun shift_cyclesOffAutoCaps() {
         val controller = KeyboardController()
-        assertFalse(controller.state.value.shiftEnabled)
+        assertEquals(ShiftMode.OFF, controller.state.value.shiftMode)
         controller.onShift()
-        assertTrue(controller.state.value.shiftEnabled)
-        controller.onCharacter("a")
-        assertFalse(controller.state.value.shiftEnabled)
-    }
-
-    @Test
-    fun shiftLongPress_enablesCapsLock() {
-        val controller = KeyboardController()
-        controller.onShiftLongPress()
-        assertTrue(controller.state.value.capsLock)
+        assertEquals(ShiftMode.AUTO, controller.state.value.shiftMode)
+        controller.onShift()
+        assertEquals(ShiftMode.CAPS, controller.state.value.shiftMode)
         assertTrue(controller.state.value.lettersUppercase)
         controller.onCharacter("b")
-        assertTrue(controller.state.value.capsLock)
+        assertEquals(ShiftMode.CAPS, controller.state.value.shiftMode)
+        controller.onShift()
+        assertEquals(ShiftMode.OFF, controller.state.value.shiftMode)
     }
 
     @Test
@@ -100,5 +95,6 @@ class KeyboardControllerTest {
         assertTrue(controller.state.value.isPasswordField)
         assertFalse(controller.state.value.suggestionMode)
         assertEquals("com.example", controller.state.value.currentPackageName)
+        assertEquals(ShiftMode.AUTO, controller.state.value.shiftMode)
     }
 }

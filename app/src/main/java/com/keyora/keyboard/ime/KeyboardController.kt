@@ -17,7 +17,6 @@ class KeyboardController(
     private var editorInfoProvider: (() -> EditorInfo?)? = null
     private var onShowImePicker: (() -> Unit)? = null
     private var onTyped: ((event: TypedEvent) -> Unit)? = null
-    private var lastShiftTapMs: Long = 0L
 
     sealed class TypedEvent {
         data class Character(val text: String) : TypedEvent()
@@ -39,15 +38,16 @@ class KeyboardController(
 
     fun onStartInput(packageName: String?, editorInfo: EditorInfo?) {
         val password = inputHandler.isPasswordField(editorInfo)
+        val needsCap = shouldAutoCapitalize(connectionProvider?.invoke())
         _state.update {
             it.copy(
                 currentPackageName = packageName,
                 isPasswordField = password,
                 suggestionMode = !password,
                 currentLayout = inputHandler.preferredLayout(editorInfo),
-                enterLabel = inputHandler.enterLabel(editorInfo),
-                shiftEnabled = false,
-                capsLock = false
+                enterLabel = "return",
+                shiftMode = ShiftMode.AUTO,
+                autoShiftActive = needsCap
             )
         }
     }
@@ -61,41 +61,57 @@ class KeyboardController(
         }
         inputHandler.commitText(connectionProvider?.invoke(), text)
         onTyped?.invoke(TypedEvent.Character(text))
-        if (current.shiftEnabled && !current.capsLock) {
-            _state.update { it.copy(shiftEnabled = false) }
+        when (current.shiftMode) {
+            ShiftMode.AUTO -> _state.update { it.copy(autoShiftActive = false) }
+            ShiftMode.OFF, ShiftMode.CAPS -> Unit
         }
     }
 
     fun onBackspace() {
         inputHandler.backspace(connectionProvider?.invoke())
         onTyped?.invoke(TypedEvent.Backspace)
+        if (_state.value.shiftMode == ShiftMode.AUTO) {
+            _state.update {
+                it.copy(autoShiftActive = shouldAutoCapitalize(connectionProvider?.invoke()))
+            }
+        }
     }
 
     fun onEnter() {
         inputHandler.enter(connectionProvider?.invoke(), editorInfoProvider?.invoke())
         onTyped?.invoke(TypedEvent.SpaceOrEnter)
+        if (_state.value.shiftMode == ShiftMode.AUTO) {
+            _state.update { it.copy(autoShiftActive = true) }
+        }
     }
 
     fun onSpace() {
         inputHandler.space(connectionProvider?.invoke())
         onTyped?.invoke(TypedEvent.SpaceOrEnter)
-    }
-
-    fun onShift() {
-        val now = System.currentTimeMillis()
-        val doubleTap = now - lastShiftTapMs < 350
-        lastShiftTapMs = now
-        _state.update { current ->
-            when {
-                doubleTap -> current.copy(capsLock = true, shiftEnabled = true)
-                current.capsLock -> current.copy(capsLock = false, shiftEnabled = false)
-                else -> current.copy(shiftEnabled = !current.shiftEnabled)
+        if (_state.value.shiftMode == ShiftMode.AUTO) {
+            _state.update {
+                it.copy(autoShiftActive = shouldAutoCapitalize(connectionProvider?.invoke()))
             }
         }
     }
 
-    fun onShiftLongPress() {
-        _state.update { it.copy(capsLock = true, shiftEnabled = true) }
+    fun onShift() {
+        _state.update { current ->
+            when (current.shiftMode) {
+                ShiftMode.OFF -> current.copy(
+                    shiftMode = ShiftMode.AUTO,
+                    autoShiftActive = shouldAutoCapitalize(connectionProvider?.invoke())
+                )
+                ShiftMode.AUTO -> current.copy(
+                    shiftMode = ShiftMode.CAPS,
+                    autoShiftActive = false
+                )
+                ShiftMode.CAPS -> current.copy(
+                    shiftMode = ShiftMode.OFF,
+                    autoShiftActive = false
+                )
+            }
+        }
     }
 
     fun switchToNumbers() {
@@ -117,9 +133,29 @@ class KeyboardController(
     fun commitSuggestion(word: String) {
         inputHandler.commitText(connectionProvider?.invoke(), "$word ")
         onTyped?.invoke(TypedEvent.SpaceOrEnter)
+        if (_state.value.shiftMode == ShiftMode.AUTO) {
+            _state.update {
+                it.copy(autoShiftActive = shouldAutoCapitalize(connectionProvider?.invoke()))
+            }
+        }
     }
 
     fun commitRawText(text: String) {
         inputHandler.commitText(connectionProvider?.invoke(), text)
+    }
+
+    private fun shouldAutoCapitalize(connection: InputConnection?): Boolean {
+        if (connection == null) return true
+        val before = connection.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+        if (before.isBlank()) return true
+        val trimmed = before.trimEnd()
+        if (trimmed.isEmpty()) return true
+        val last = trimmed.last()
+        if (last == '\n' || last == '\r') return true
+        if (last == '.' || last == '!' || last == '?') {
+            val afterTerminator = before.length > trimmed.length
+            return afterTerminator || before.endsWith(" ") || before.endsWith("\n")
+        }
+        return false
     }
 }

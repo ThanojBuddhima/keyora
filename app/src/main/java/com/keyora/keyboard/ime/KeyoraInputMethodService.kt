@@ -12,11 +12,10 @@ import com.keyora.keyboard.KeyoraApp
 import com.keyora.keyboard.appdetector.AppContextDetector
 import com.keyora.keyboard.clipboard.ClipboardRepository
 import com.keyora.keyboard.enablement.ImeEnablement
+import com.keyora.keyboard.ime.emoji.RecentEmojiStore
 import com.keyora.keyboard.ime.ui.KeyboardRootView
 import com.keyora.keyboard.settings.KeyboardHeightLevel
 import com.keyora.keyboard.settings.SettingsRepository
-import com.keyora.keyboard.suggestions.PlaceholderSuggestionEngine
-import com.keyora.keyboard.suggestions.SuggestionEngine
 import com.keyora.keyboard.theme.ResolvedTheme
 import com.keyora.keyboard.theme.ThemeManager
 import com.keyora.keyboard.theme.ThemeSettings
@@ -33,15 +32,14 @@ class KeyoraInputMethodService : InputMethodService() {
 
     private val controller = KeyboardController()
     private val appDetector = AppContextDetector()
-    private val suggestionEngine: SuggestionEngine = PlaceholderSuggestionEngine()
 
     private var themeManager: ThemeManager? = null
     private var serviceScope: CoroutineScope? = null
     private var rootView: KeyboardRootView? = null
     private var clipboardRepository: ClipboardRepository? = null
+    private var recentEmojiStore: RecentEmojiStore? = null
     private var settingsRepository: SettingsRepository? = null
     private var heightLevel: KeyboardHeightLevel = KeyboardHeightLevel.MEDIUM
-    private val wordBuffer = StringBuilder()
 
     override fun onCreate() {
         try {
@@ -50,6 +48,7 @@ class KeyoraInputMethodService : InputMethodService() {
             serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             settingsRepository = settingsRepositoryOrNull()
             clipboardRepository = ClipboardRepository(applicationContext)
+            recentEmojiStore = RecentEmojiStore(applicationContext)
 
             controller.bind(
                 connectionProvider = { currentInputConnection },
@@ -60,24 +59,6 @@ class KeyoraInputMethodService : InputMethodService() {
                     } catch (t: Throwable) {
                         Log.e(TAG, "Failed to show IME picker", t)
                     }
-                },
-                onTyped = { event ->
-                    when (event) {
-                        is KeyboardController.TypedEvent.Character -> {
-                            if (event.text.any { it.isLetterOrDigit() || it == '\'' }) {
-                                wordBuffer.append(event.text)
-                            } else {
-                                wordBuffer.clear()
-                            }
-                        }
-                        KeyboardController.TypedEvent.Backspace -> {
-                            if (wordBuffer.isNotEmpty()) {
-                                wordBuffer.deleteCharAt(wordBuffer.lastIndex)
-                            }
-                        }
-                        KeyboardController.TypedEvent.SpaceOrEnter -> wordBuffer.clear()
-                    }
-                    refreshSuggestionsOnly()
                 }
             )
 
@@ -102,11 +83,10 @@ class KeyoraInputMethodService : InputMethodService() {
                     .map { state ->
                         KeyboardVisualSnapshot(
                             currentLayout = state.currentLayout,
-                            shiftEnabled = state.shiftEnabled,
-                            capsLock = state.capsLock,
+                            shiftMode = state.shiftMode,
+                            autoShiftActive = state.autoShiftActive,
                             enterLabel = state.enterLabel,
-                            isPasswordField = state.isPasswordField,
-                            suggestionMode = state.suggestionMode
+                            isPasswordField = state.isPasswordField
                         )
                     }
                     .distinctUntilChanged()
@@ -114,7 +94,6 @@ class KeyoraInputMethodService : InputMethodService() {
                         rootView?.renderKeyboardState(controller.state.value)
                         if (snapshot.isPasswordField) {
                             refreshChrome()
-                            refreshSuggestionsOnly()
                         }
                     }
             }
@@ -128,10 +107,14 @@ class KeyoraInputMethodService : InputMethodService() {
             val clipboard = clipboardRepository ?: ClipboardRepository(applicationContext).also {
                 clipboardRepository = it
             }
+            val recent = recentEmojiStore ?: RecentEmojiStore(applicationContext).also {
+                recentEmojiStore = it
+            }
             val root = KeyboardRootView(this)
             root.bind(
                 controller = controller,
                 clipboardRepository = clipboard,
+                recentEmojiStore = recent,
                 onCycleHeight = {
                     val next = heightLevel.next()
                     heightLevel = next
@@ -163,7 +146,6 @@ class KeyoraInputMethodService : InputMethodService() {
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         try {
             super.onStartInput(attribute, restarting)
-            wordBuffer.clear()
             val packageName = appDetector.getCurrentPackageName(attribute)
             themeManager?.onInputContextChanged(packageName)
             controller.onStartInput(packageName, attribute)
@@ -202,6 +184,7 @@ class KeyoraInputMethodService : InputMethodService() {
             rootView = null
             themeManager = null
             clipboardRepository = null
+            recentEmojiStore = null
             settingsRepository = null
         } catch (t: Throwable) {
             Log.e(TAG, "onDestroy cleanup failed", t)
@@ -227,7 +210,6 @@ class KeyoraInputMethodService : InputMethodService() {
 
     private fun refreshAll() {
         refreshChrome()
-        refreshSuggestionsOnly()
         rootView?.renderKeyboardState(controller.state.value)
     }
 
@@ -242,16 +224,6 @@ class KeyoraInputMethodService : InputMethodService() {
         )
     }
 
-    private fun refreshSuggestionsOnly() {
-        val root = rootView ?: return
-        val state = controller.state.value
-        val suggestions = suggestionEngine.suggestionsFor(
-            prefix = wordBuffer.toString(),
-            enabled = state.suggestionMode && !state.isPasswordField
-        )
-        root.updateSuggestions(suggestions)
-    }
-
     private fun settingsRepositoryOrNull(): SettingsRepository? {
         return try {
             (application as? KeyoraApp)?.settingsRepository
@@ -264,11 +236,10 @@ class KeyoraInputMethodService : InputMethodService() {
 
     private data class KeyboardVisualSnapshot(
         val currentLayout: KeyboardLayout,
-        val shiftEnabled: Boolean,
-        val capsLock: Boolean,
+        val shiftMode: ShiftMode,
+        val autoShiftActive: Boolean,
         val enterLabel: String,
-        val isPasswordField: Boolean,
-        val suggestionMode: Boolean
+        val isPasswordField: Boolean
     )
 
     companion object {

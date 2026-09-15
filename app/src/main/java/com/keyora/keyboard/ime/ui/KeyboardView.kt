@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import com.keyora.keyboard.ime.KeyboardController
 import com.keyora.keyboard.ime.KeyboardLayout
 import com.keyora.keyboard.ime.KeyboardState
+import com.keyora.keyboard.ime.ShiftMode
 import com.keyora.keyboard.theme.KeyboardColors
 import com.keyora.keyboard.theme.ResolvedTheme
 
@@ -178,17 +179,16 @@ fun LetterKeyboard(
                 SpecialKey(
                     width = keyWidth * 1.4f,
                     colors = colors,
-                    onTap = { controller.onShift() },
-                    onLongPress = { controller.onShiftLongPress() }
+                    onTap = { controller.onShift() }
                 ) {
                     Icon(
-                        imageVector = if (state.capsLock) {
+                        imageVector = if (state.shiftMode == ShiftMode.CAPS) {
                             Icons.Outlined.KeyboardCapslock
                         } else {
                             Icons.Outlined.KeyboardArrowUp
                         },
                         contentDescription = "Shift",
-                        tint = if (state.shiftEnabled || state.capsLock) {
+                        tint = if (state.shiftHighlighted) {
                             colors.returnKeyBackground
                         } else {
                             colors.specialKeyText

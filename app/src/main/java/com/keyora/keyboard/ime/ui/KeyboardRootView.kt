@@ -1,6 +1,7 @@
 package com.keyora.keyboard.ime.ui
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.util.TypedValue
@@ -8,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -20,12 +22,19 @@ import com.keyora.keyboard.R
 import com.keyora.keyboard.clipboard.ClipboardRepository
 import com.keyora.keyboard.ime.KeyboardController
 import com.keyora.keyboard.ime.emoji.EmojiCatalog
+import com.keyora.keyboard.ime.emoji.RecentEmojiStore
 import com.keyora.keyboard.settings.KeyboardHeightLevel
+import com.keyora.keyboard.settings.SettingsActivity
 import com.keyora.keyboard.theme.KeyboardThemeTokens
 import com.keyora.keyboard.theme.ResolvedTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
- * IME root: suggestion strip + keys + bottom emoji/clipboard dock (iOS-inspired chrome).
+ * IME root: top utility toolbar + keys (or emoji/clipboard panel).
  */
 class KeyboardRootView @JvmOverloads constructor(
     context: Context,
@@ -36,6 +45,7 @@ class KeyboardRootView @JvmOverloads constructor(
 
     private var controller: KeyboardController? = null
     private var clipboardRepository: ClipboardRepository? = null
+    private var recentEmojiStore: RecentEmojiStore? = null
     private var onCycleHeight: (() -> Unit)? = null
     private var tokens = KeyboardThemeTokens.Light
     private var resolvedTheme: ResolvedTheme = ResolvedTheme.LIGHT
@@ -43,14 +53,16 @@ class KeyboardRootView @JvmOverloads constructor(
     private var panel = Panel.NONE
     private var navInsetBottom = 0
     private var passwordField = false
-    private var suggestions: List<String> = emptyList()
     private var chromeApplied = false
+    private var emojiTabId: String = TAB_RECENT
+    private var recentEmojis: List<String> = emptyList()
+    private val viewScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private val suggestionBar = LinearLayout(context).apply {
+    private val toolbar = LinearLayout(context).apply {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(SUGGESTION_HEIGHT_DP))
-        setPadding(dp(8), 0, dp(8), 0)
+        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(TOOLBAR_HEIGHT_DP))
+        setPadding(dp(10), dp(2), dp(10), dp(2))
     }
 
     private val panelHost = FrameLayout(context).apply {
@@ -62,24 +74,15 @@ class KeyboardRootView @JvmOverloads constructor(
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
     }
 
-    private val dock = LinearLayout(context).apply {
-        orientation = HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(DOCK_CONTENT_DP))
-        setPadding(dp(16), dp(4), dp(16), dp(4))
-    }
-
     init {
         orientation = VERTICAL
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         background = plateBackground(tokens.background)
-        addView(suggestionBar)
+        addView(toolbar)
         addView(panelHost)
         addView(keyboardLayout)
-        addView(dock)
         applyBottomSafePadding()
-        rebuildSuggestionBar()
-        rebuildDock()
+        rebuildToolbar()
 
         ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
             val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
@@ -94,23 +97,21 @@ class KeyboardRootView @JvmOverloads constructor(
     fun bind(
         controller: KeyboardController,
         clipboardRepository: ClipboardRepository,
+        recentEmojiStore: RecentEmojiStore,
         onCycleHeight: () -> Unit
     ) {
         this.controller = controller
         this.clipboardRepository = clipboardRepository
+        this.recentEmojiStore = recentEmojiStore
         this.onCycleHeight = onCycleHeight
         keyboardLayout.bind(controller)
-        rebuildDock()
-    }
-
-    fun update(
-        theme: ResolvedTheme,
-        heightLevel: KeyboardHeightLevel,
-        passwordField: Boolean,
-        suggestions: List<String> = emptyList()
-    ) {
-        updateChrome(theme, heightLevel, passwordField)
-        updateSuggestions(suggestions)
+        rebuildToolbar()
+        viewScope.launch {
+            recentEmojiStore.recent.collect { list ->
+                recentEmojis = list
+                if (panel == Panel.EMOJI) renderPanel()
+            }
+        }
     }
 
     fun updateChrome(
@@ -135,93 +136,42 @@ class KeyboardRootView @JvmOverloads constructor(
         }
         if (heightChanged) {
             keyboardLayout.setKeyMetrics(heightLevel.keyHeightDp(), heightLevel.rowGapDp())
-            dock.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, dp(DOCK_CONTENT_DP))
         }
         clipboardRepository?.captureEnabled = !passwordField
         if (passwordField && panel == Panel.CLIPBOARD) {
             showPanel(Panel.NONE)
         }
         if (themeChanged || passwordChanged) {
-            rebuildSuggestionBar()
-            rebuildDock()
+            rebuildToolbar()
         }
         if (panel != Panel.NONE && (themeChanged || passwordChanged)) {
             renderPanel()
         }
     }
 
-    fun updateSuggestions(next: List<String>) {
-        val normalized = List(3) { index -> next.getOrNull(index).orEmpty() }
-        val current = List(3) { index -> suggestions.getOrNull(index).orEmpty() }
-        if (normalized == current && suggestionBar.childCount > 0) {
-            val expectedVisibility = if (!passwordField) VISIBLE else GONE
-            if (suggestionBar.visibility == expectedVisibility) return
-        }
-        suggestions = normalized
-        rebuildSuggestionBar()
-    }
-
     fun renderKeyboardState(state: com.keyora.keyboard.ime.KeyboardState) {
         keyboardLayout.renderState(state)
+    }
+
+    override fun onDetachedFromWindow() {
+        viewScope.cancel()
+        super.onDetachedFromWindow()
     }
 
     private fun applyBottomSafePadding() {
         setPadding(0, 0, 0, navInsetBottom + dp(EXTRA_BOTTOM_PAD_DP))
     }
 
-    private fun rebuildSuggestionBar() {
-        suggestionBar.removeAllViews()
-        val show = !passwordField
-        suggestionBar.visibility = if (show) VISIBLE else GONE
-        if (!show) return
-
-        val slots = List(3) { index -> suggestions.getOrNull(index).orEmpty() }
-        slots.forEachIndexed { index, word ->
-            if (index > 0) {
-                suggestionBar.addView(
-                    View(context).apply {
-                        layoutParams = LayoutParams(dp(1), dp(18)).apply {
-                            marginStart = dp(4)
-                            marginEnd = dp(4)
-                        }
-                        setBackgroundColor(tokens.suggestionDivider)
-                    }
-                )
-            }
-            suggestionBar.addView(
-                TextView(context).apply {
-                    text = word
-                    gravity = Gravity.CENTER
-                    setTextColor(tokens.suggestionText)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                    maxLines = 1
-                    layoutParams = LayoutParams(0, LayoutParams.MATCH_PARENT, 1f)
-                    isClickable = word.isNotBlank()
-                    if (word.isNotBlank()) {
-                        setOnClickListener {
-                            controller?.commitSuggestion(word)
-                        }
-                    }
-                }
-            )
-        }
-    }
-
-    private fun rebuildDock() {
-        dock.removeAllViews()
-        dock.addView(
-            dockIcon(
+    private fun rebuildToolbar() {
+        toolbar.removeAllViews()
+        toolbar.addView(
+            toolbarIcon(
                 iconRes = R.drawable.ic_emoji,
                 onClick = { togglePanel(Panel.EMOJI) }
             )
         )
-        dock.addView(
-            View(context).apply {
-                layoutParams = LayoutParams(0, 1, 1f)
-            }
-        )
-        dock.addView(
-            dockIcon(
+        toolbar.addView(
+            toolbarIcon(
                 iconRes = R.drawable.ic_clipboard,
                 onClick = {
                     if (!passwordField) togglePanel(Panel.CLIPBOARD)
@@ -232,9 +182,31 @@ class KeyboardRootView @JvmOverloads constructor(
                 }
             )
         )
+        toolbar.addView(
+            View(context).apply {
+                layoutParams = LayoutParams(0, 1, 1f)
+            }
+        )
+        toolbar.addView(
+            toolbarIcon(
+                iconRes = R.drawable.ic_settings,
+                onClick = { openSettings() }
+            )
+        )
     }
 
-    private fun dockIcon(
+    private fun openSettings() {
+        try {
+            context.startActivity(
+                Intent(context, SettingsActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (_: Throwable) {
+            // Ignore if activity cannot be launched from IME context.
+        }
+    }
+
+    private fun toolbarIcon(
         iconRes: Int,
         onClick: () -> Unit,
         onLongClick: (() -> Boolean)? = null
@@ -246,8 +218,10 @@ class KeyboardRootView @JvmOverloads constructor(
                 setImageDrawable(drawable)
             }
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            layoutParams = LayoutParams(dp(36), dp(36))
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = LayoutParams(dp(40), dp(40)).apply {
+                marginEnd = dp(4)
+            }
+            setPadding(dp(8), dp(8), dp(8), dp(8))
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
@@ -284,33 +258,131 @@ class KeyboardRootView @JvmOverloads constructor(
     }
 
     private fun buildEmojiPanel(): View {
-        val scroll = ScrollView(context).apply {
+        val column = LinearLayout(context).apply {
+            orientation = VERTICAL
             layoutParams = FrameLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT,
                 dp(PANEL_HEIGHT_DP)
             )
         }
+
+        val header = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(2), dp(4), dp(2))
+        }
+        val tabsScroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tabsRow = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        tabsRow.addView(categoryChip(TAB_RECENT, "Recent", selected = emojiTabId == TAB_RECENT))
+        EmojiCatalog.categories.forEach { category ->
+            tabsRow.addView(
+                categoryChip(
+                    id = category.id,
+                    label = category.label,
+                    selected = emojiTabId == category.id
+                )
+            )
+        }
+        tabsScroll.addView(tabsRow)
+        header.addView(tabsScroll)
+        header.addView(TextView(context).apply {
+            text = "ABC"
+            setTextColor(tokens.suggestionText)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener {
+                showPanel(Panel.NONE)
+                controller?.switchToLetters()
+            }
+        })
+        column.addView(header)
+
+        val scroll = ScrollView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f)
+        }
         val grid = GridLayout(context).apply {
             columnCount = 8
             setPadding(dp(6), dp(4), dp(6), dp(4))
         }
-        EmojiCatalog.all.forEach { emoji ->
-            val cell = TextView(context).apply {
-                text = emoji
-                gravity = Gravity.CENTER
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-                setPadding(dp(6), dp(8), dp(6), dp(8))
-                layoutParams = GridLayout.LayoutParams().apply {
-                    width = 0
-                    height = LayoutParams.WRAP_CONTENT
-                    columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+        val emojis = emojiListForTab(emojiTabId)
+        if (emojis.isEmpty()) {
+            grid.addView(
+                TextView(context).apply {
+                    text = if (emojiTabId == TAB_RECENT) {
+                        "No recent emoji yet."
+                    } else {
+                        "No emoji in this category."
+                    }
+                    setTextColor(tokens.specialKeyText)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setPadding(dp(8), dp(16), dp(8), dp(8))
+                    layoutParams = GridLayout.LayoutParams().apply {
+                        width = LayoutParams.MATCH_PARENT
+                        columnSpec = GridLayout.spec(0, 8)
+                    }
                 }
-                setOnClickListener { controller?.commitRawText(emoji) }
+            )
+        } else {
+            emojis.forEach { emoji ->
+                grid.addView(
+                    TextView(context).apply {
+                        text = emoji
+                        gravity = Gravity.CENTER
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                        setPadding(dp(6), dp(8), dp(6), dp(8))
+                        layoutParams = GridLayout.LayoutParams().apply {
+                            width = 0
+                            height = LayoutParams.WRAP_CONTENT
+                            columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                        }
+                        setOnClickListener { commitEmoji(emoji) }
+                    }
+                )
             }
-            grid.addView(cell)
         }
         scroll.addView(grid)
-        return scroll
+        column.addView(scroll)
+        return column
+    }
+
+    private fun categoryChip(id: String, label: String, selected: Boolean): TextView {
+        return TextView(context).apply {
+            text = label
+            gravity = Gravity.CENTER
+            setTextColor(if (selected) tokens.keyText else tokens.suggestionText)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (label.length <= 2) 18f else 13f)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = if (selected) {
+                rounded(tokens.keyBackground, dp(14))
+            } else {
+                null
+            }
+            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(4)
+            }
+            setOnClickListener {
+                emojiTabId = id
+                renderPanel()
+            }
+        }
+    }
+
+    private fun emojiListForTab(tabId: String): List<String> {
+        if (tabId == TAB_RECENT) return recentEmojis
+        return EmojiCatalog.categories.firstOrNull { it.id == tabId }?.emojis.orEmpty()
+    }
+
+    private fun commitEmoji(emoji: String) {
+        controller?.commitRawText(emoji)
+        viewScope.launch {
+            recentEmojiStore?.record(emoji)
+        }
     }
 
     private fun buildClipboardPanel(): View {
@@ -414,9 +486,9 @@ class KeyboardRootView @JvmOverloads constructor(
         ).toInt()
 
     companion object {
-        private const val EXTRA_BOTTOM_PAD_DP = 28
-        private const val PANEL_HEIGHT_DP = 220
-        private const val SUGGESTION_HEIGHT_DP = 40
-        private const val DOCK_CONTENT_DP = 40
+        private const val EXTRA_BOTTOM_PAD_DP = 8
+        private const val PANEL_HEIGHT_DP = 240
+        private const val TOOLBAR_HEIGHT_DP = 40
+        private const val TAB_RECENT = "recent"
     }
 }
